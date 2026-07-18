@@ -4,7 +4,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Upload, Trash2, Music, Search, Shuffle, Repeat, Repeat1,
-  ChevronUp, X, Loader2, RefreshCw, Users, Plus, Folder, FolderOpen
+  ChevronUp, X, Loader2, RefreshCw, Users, Plus, Folder, FolderOpen,
+  CheckSquare, Square
 } from 'lucide-react';
 
 interface Track {
@@ -46,6 +47,7 @@ function formatDate(dateStr: string): string {
     day: '2-digit', month: '2-digit', year: 'numeric'
   });
 }
+
 // Chuẩn hoá tên để so sánh (bỏ khoảng trắng thừa, không phân biệt hoa/thường)
 function normalizeTitle(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -82,6 +84,11 @@ export default function MusicApp() {
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [folderError, setFolderError] = useState<string | null>(null);
   const chosenFolderRef = useRef<string | null>(null);
+
+  // Chọn nhiều bài để xoá hàng loạt
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -367,105 +374,105 @@ export default function MusicApp() {
 
   // Upload
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-  const files = Array.from(e.target.files || []);
-  if (!files.length) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
 
-  const audioFiles = files.filter(f => f.type.startsWith('audio/'));
-  if (!audioFiles.length) {
-    alert('Vui lòng chọn file âm thanh (MP3, WAV, FLAC, AAC...)');
-    return;
-  }
-
-  // Tập hợp tên bài hát hiện có (đã chuẩn hoá) để đối chiếu trùng lặp
-  const existingTitles = new Set(tracks.map(t => normalizeTitle(t.title)));
-
-  const duplicates: string[] = [];
-  const toUpload: File[] = [];
-
-  for (const file of audioFiles) {
-    const suggestedTitle = file.name.replace(/\.[^.]+$/, '').trim() || 'Untitled';
-    if (existingTitles.has(normalizeTitle(suggestedTitle))) {
-      duplicates.push(file.name);
-    } else {
-      toUpload.push(file);
-      // Thêm luôn vào set để tránh trùng giữa các file chọn cùng lúc
-      existingTitles.add(normalizeTitle(suggestedTitle));
+    const audioFiles = files.filter(f => f.type.startsWith('audio/'));
+    if (!audioFiles.length) {
+      alert('Vui lòng chọn file âm thanh (MP3, WAV, FLAC, AAC...)');
+      return;
     }
-  }
 
-  if (duplicates.length) {
-    alert(
-      `${duplicates.length} file đã tồn tại nên không được thêm:\n` +
-      duplicates.map(name => `• ${name}`).join('\n')
-    );
-  }
+    // Tập hợp tên bài hát hiện có (đã chuẩn hoá) để đối chiếu trùng lặp
+    const existingTitles = new Set(tracks.map(t => normalizeTitle(t.title)));
 
-  if (!toUpload.length) {
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    return;
-  }
+    const duplicates: string[] = [];
+    const toUpload: File[] = [];
 
-  const targetFolder = chosenFolderRef.current ? `music/${chosenFolderRef.current}` : 'music';
+    for (const file of audioFiles) {
+      const suggestedTitle = file.name.replace(/\.[^.]+$/, '').trim() || 'Untitled';
+      if (existingTitles.has(normalizeTitle(suggestedTitle))) {
+        duplicates.push(file.name);
+      } else {
+        toUpload.push(file);
+        // Thêm luôn vào set để tránh trùng giữa các file chọn cùng lúc
+        existingTitles.add(normalizeTitle(suggestedTitle));
+      }
+    }
 
-  setIsUploading(true);
-  setUploadProgress(0);
-  setUploadDone(0);
-  setUploadTotal(toUpload.length);
-
-  for (let i = 0; i < toUpload.length; i++) {
-    const file = toUpload[i];
-    setUploadQueue([file.name]);
-    setUploadProgress(Math.round((i / toUpload.length) * 100));
-
-    try {
-      const suggestedTitle = file.name.replace(/\.[^.]+$/, '').trim();
-      const title = suggestedTitle || 'Untitled';
-
-      const sigRes = await fetch('/api/upload-signature', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder: targetFolder }),
-      });
-      const sig = await sigRes.json();
-
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('api_key', sig.api_key);
-      formData.append('timestamp', sig.timestamp);
-      formData.append('signature', sig.signature);
-      formData.append('folder', sig.folder);
-
-      const uploadRes = await fetch(
-        `https://api.cloudinary.com/v1_1/${sig.cloud_name}/video/upload`,
-        { method: 'POST', body: formData }
+    if (duplicates.length) {
+      alert(
+        `${duplicates.length} file đã tồn tại nên không được thêm:\n` +
+        duplicates.map(name => `• ${name}`).join('\n')
       );
-      const uploadData = await uploadRes.json();
+    }
 
-      if (uploadData?.public_id) {
-        const setTitleRes = await fetch('/api/tracks/set-title', {
+    if (!toUpload.length) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const targetFolder = chosenFolderRef.current ? `music/${chosenFolderRef.current}` : 'music';
+
+    setIsUploading(true);
+    setUploadProgress(0);
+    setUploadDone(0);
+    setUploadTotal(toUpload.length);
+
+    for (let i = 0; i < toUpload.length; i++) {
+      const file = toUpload[i];
+      setUploadQueue([file.name]);
+      setUploadProgress(Math.round((i / toUpload.length) * 100));
+
+      try {
+        const suggestedTitle = file.name.replace(/\.[^.]+$/, '').trim();
+        const title = suggestedTitle || 'Untitled';
+
+        const sigRes = await fetch('/api/upload-signature', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ publicId: uploadData.public_id, title }),
+          body: JSON.stringify({ folder: targetFolder }),
         });
-        if (!setTitleRes.ok) {
-          console.error('Set title failed:', await setTitleRes.text());
-        }
-      }
-    } catch (err) {
-      console.error('Upload error:', err);
-    } finally {
-      setUploadDone(i + 1);
-    }
-  }
+        const sig = await sigRes.json();
 
-  setUploadProgress(100);
-  setUploadQueue([]);
-  setIsUploading(false);
-  chosenFolderRef.current = null;
-  if (fileInputRef.current) fileInputRef.current.value = '';
-  fetchTracks();
-  fetchFolders();
-};
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('api_key', sig.api_key);
+        formData.append('timestamp', sig.timestamp);
+        formData.append('signature', sig.signature);
+        formData.append('folder', sig.folder);
+
+        const uploadRes = await fetch(
+          `https://api.cloudinary.com/v1_1/${sig.cloud_name}/video/upload`,
+          { method: 'POST', body: formData }
+        );
+        const uploadData = await uploadRes.json();
+
+        if (uploadData?.public_id) {
+          const setTitleRes = await fetch('/api/tracks/set-title', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ publicId: uploadData.public_id, title }),
+          });
+          if (!setTitleRes.ok) {
+            console.error('Set title failed:', await setTitleRes.text());
+          }
+        }
+      } catch (err) {
+        console.error('Upload error:', err);
+      } finally {
+        setUploadDone(i + 1);
+      }
+    }
+
+    setUploadProgress(100);
+    setUploadQueue([]);
+    setIsUploading(false);
+    chosenFolderRef.current = null;
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    fetchTracks();
+    fetchFolders();
+  };
 
   const handleDelete = async (track: Track, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -490,6 +497,64 @@ export default function MusicApp() {
       console.error('Delete error:', err);
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  // Bật/tắt chế độ chọn nhiều bài để xoá hàng loạt
+  const toggleSelectMode = () => {
+    setSelectMode(prev => !prev);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelectTrack = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredTracks.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredTracks.map(t => t.id)));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selectedIds.size) return;
+    if (!confirm(`Xóa ${selectedIds.size} bài hát đã chọn?`)) return;
+
+    setIsBulkDeleting(true);
+    try {
+      const tracksToDelete = tracks.filter(t => selectedIds.has(t.id));
+      const publicIds = tracksToDelete.map(t => t.public_id);
+
+      const res = await fetch('/api/tracks/bulk-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicIds }),
+      });
+
+      if (res.ok) {
+        setTracks(prev => prev.filter(t => !selectedIds.has(t.id)));
+        if (currentTrack && selectedIds.has(currentTrack.id)) {
+          setCurrentTrack(null);
+          setIsPlaying(false);
+        }
+        setSelectedIds(new Set());
+        setSelectMode(false);
+      } else {
+        alert('Xoá thất bại, thử lại sau.');
+      }
+    } catch (err) {
+      console.error('Bulk delete error:', err);
+      alert('Xoá thất bại, thử lại sau.');
+    } finally {
+      setIsBulkDeleting(false);
     }
   };
 
@@ -619,9 +684,18 @@ export default function MusicApp() {
             )}
           </div>
 
+          {/* Nút bật/tắt chế độ chọn nhiều bài */}
+          <button
+            onClick={toggleSelectMode}
+            className={`p-2 transition-colors flex-shrink-0 ${selectMode ? 'text-violet-400' : 'text-white/40 hover:text-white/70'}`}
+            title="Chọn nhiều bài"
+          >
+            <CheckSquare size={15} />
+          </button>
+
           <button
             onClick={fetchTracks}
-            className="p-2 text-white/40 hover:text-white/70 transition-colors"
+            className="p-2 text-white/40 hover:text-white/70 transition-colors flex-shrink-0"
             title="Làm mới"
           >
             <RefreshCw size={15} />
@@ -691,6 +765,31 @@ export default function MusicApp() {
           </div>
         )}
 
+        {/* Thanh thao tác khi đang ở chế độ chọn nhiều */}
+        {selectMode && (
+          <div className="flex items-center gap-3 mb-3 bg-violet-900/20 border border-violet-500/20 rounded-xl px-3 py-2">
+            <button
+              onClick={toggleSelectAll}
+              className="text-xs text-violet-300 hover:text-violet-200"
+            >
+              {selectedIds.size === filteredTracks.length && filteredTracks.length > 0
+                ? 'Bỏ chọn tất cả'
+                : 'Chọn tất cả'}
+            </button>
+            <span className="text-xs text-white/40 ml-auto">
+              Đã chọn {selectedIds.size}
+            </span>
+            <button
+              onClick={handleBulkDelete}
+              disabled={!selectedIds.size || isBulkDeleting}
+              className="flex items-center gap-1.5 bg-red-600 hover:bg-red-500 disabled:bg-red-900 disabled:cursor-not-allowed px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+            >
+              {isBulkDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+              Xoá
+            </button>
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div className="bg-red-900/20 border border-red-500/20 rounded-xl p-4 mb-4 text-red-400 text-sm">
@@ -723,41 +822,70 @@ export default function MusicApp() {
             {filteredTracks.map((track, idx) => {
               const isActive = currentTrack?.id === track.id;
               const isCurrentPlaying = isActive && isPlaying;
+              const isSelected = selectedIds.has(track.id);
 
               return (
                 <div
                   key={track.id}
-                  onClick={() => isActive ? togglePlay() : playTrack(track)}
+                  onClick={() => {
+                    if (selectMode) {
+                      setSelectedIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(track.id)) next.delete(track.id);
+                        else next.add(track.id);
+                        return next;
+                      });
+                    } else {
+                      isActive ? togglePlay() : playTrack(track);
+                    }
+                  }}
                   className={`group flex items-center gap-3 px-3 py-3 rounded-xl cursor-pointer transition-all ${
-                    isActive
-                      ? 'bg-violet-600/15 border border-violet-500/20'
-                      : 'hover:bg-white/5 border border-transparent'
+                    isSelected
+                      ? 'bg-violet-600/20 border border-violet-500/40'
+                      : isActive
+                        ? 'bg-violet-600/15 border border-violet-500/20'
+                        : 'hover:bg-white/5 border border-transparent'
                   }`}
                 >
+                  {/* Checkbox chọn nhiều */}
+                  {selectMode && (
+                    <button
+                      onClick={(e) => toggleSelectTrack(track.id, e)}
+                      className="flex-shrink-0"
+                    >
+                      {isSelected
+                        ? <CheckSquare size={18} className="text-violet-400" />
+                        : <Square size={18} className="text-white/30" />
+                      }
+                    </button>
+                  )}
+
                   {/* Index / Play indicator */}
-                  <div className="w-8 text-center flex-shrink-0">
-                    {isCurrentPlaying ? (
-                      <div className="flex items-end justify-center gap-0.5 h-4">
-                        {[1,2,3,4,5].map(i => (
-                          <div
-                            key={i}
-                            className="w-1 bg-violet-400 rounded-full wave-bar"
-                            style={{ animationDelay: `${(i-1)*0.1}s` }}
-                          />
-                        ))}
-                      </div>
-                    ) : (
-                      <span className={`text-xs ${isActive ? 'text-violet-400' : 'text-white/25 group-hover:hidden'}`}>
-                        {idx + 1}
-                      </span>
-                    )}
-                    {!isActive && (
-                      <Play size={14} className="hidden group-hover:block mx-auto text-white/60" />
-                    )}
-                    {isActive && !isCurrentPlaying && (
-                      <Play size={14} className="mx-auto text-violet-400" />
-                    )}
-                  </div>
+                  {!selectMode && (
+                    <div className="w-8 text-center flex-shrink-0">
+                      {isCurrentPlaying ? (
+                        <div className="flex items-end justify-center gap-0.5 h-4">
+                          {[1,2,3,4,5].map(i => (
+                            <div
+                              key={i}
+                              className="w-1 bg-violet-400 rounded-full wave-bar"
+                              style={{ animationDelay: `${(i-1)*0.1}s` }}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <span className={`text-xs ${isActive ? 'text-violet-400' : 'text-white/25 group-hover:hidden'}`}>
+                          {idx + 1}
+                        </span>
+                      )}
+                      {!isActive && (
+                        <Play size={14} className="hidden group-hover:block mx-auto text-white/60" />
+                      )}
+                      {isActive && !isCurrentPlaying && (
+                        <Play size={14} className="mx-auto text-violet-400" />
+                      )}
+                    </div>
+                  )}
 
                   {/* Track icon */}
                   <div className={`w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center ${
@@ -781,17 +909,19 @@ export default function MusicApp() {
                     {formatTime(track.duration)}
                   </span>
 
-                  {/* Delete */}
-                  <button
-                    onClick={(e) => handleDelete(track, e)}
-                    disabled={deletingId === track.id}
-                    className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-white/20 hover:text-red-400 transition-all flex-shrink-0"
-                  >
-                    {deletingId === track.id
-                      ? <Loader2 size={13} className="animate-spin" />
-                      : <Trash2 size={13} />
-                    }
-                  </button>
+                  {/* Delete (ẩn khi đang ở chế độ chọn nhiều) */}
+                  {!selectMode && (
+                    <button
+                      onClick={(e) => handleDelete(track, e)}
+                      disabled={deletingId === track.id}
+                      className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-white/20 hover:text-red-400 transition-all flex-shrink-0"
+                    >
+                      {deletingId === track.id
+                        ? <Loader2 size={13} className="animate-spin" />
+                        : <Trash2 size={13} />
+                      }
+                    </button>
+                  )}
                 </div>
               );
             })}
