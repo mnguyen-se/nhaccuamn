@@ -11,6 +11,7 @@ export interface Track {
   public_id: string;
   url: string;
   title: string;
+  artist: string;
   duration: number;
   format: string;
   size: number;
@@ -20,55 +21,95 @@ export interface Track {
 
 export async function getAllTracks(): Promise<Track[]> {
   try {
-    // Dùng resources API thay vì search — ổn định hơn
-    const ping = await cloudinary.api.ping();
-    console.log('PING:', ping);
-    console.log("Cloud name:", process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME);
-    const usage = await cloudinary.api.usage();
-console.log(JSON.stringify(usage, null, 2));
+    const folders = await getArtistFolders();
+    const prefixes = ['music', ...folders.map(f => `music/${f}`)];
 
-    const result = await cloudinary.api.resources({
-      resource_type: 'video',
-      type: 'upload',
-      prefix: 'music/',      // match folder music/
-      max_results: 100,
-      context: true,         // lấy title từ context
-      tags: true,
+    const resourceMap = new Map<string, any>();
+
+    for (const prefix of prefixes) {
+      const result = await cloudinary.api.resources({
+        resource_type: 'video',
+        type: 'upload',
+        prefix,
+        context: true,
+        max_results: 100,
+      });
+      for (const r of result.resources) {
+        resourceMap.set(r.public_id, r); // trùng public_id sẽ tự ghi đè, không nhân đôi
+      }
+    }
+
+    const allResources = Array.from(resourceMap.values()).sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    return allResources.map((r: any) => {
+      const rawTitle: string = r.context?.custom?.title || extractTitle(r.public_id);
+      const contextArtist: string | undefined = r.context?.custom?.artist;
+      const artist = deriveArtist(r.public_id, contextArtist);
+
+      return {
+        id: r.asset_id,
+        public_id: r.public_id,
+        url: r.secure_url,
+        title: rawTitle.trim() || 'Untitled',
+        artist,
+        duration: r.duration || 0,
+        format: r.format,
+        size: r.bytes,
+        created_at: r.created_at,
+        cover: r.context?.custom?.cover || null,
+      };
     });
-
-    console.log('Total resources:', result.resources.length);
-    console.log('Sample:', JSON.stringify(result.resources[0], null, 2));
-
-    // Test tạm — paste vào API route hoặc getAllTracks
-const [videoRes, rawRes, imageRes] = await Promise.all([
-  cloudinary.api.resources({ resource_type: 'video', type: 'upload', max_results: 5 }),
-  cloudinary.api.resources({ resource_type: 'raw', type: 'upload', max_results: 5 }),
-  cloudinary.api.resources({ resource_type: 'image', type: 'upload', max_results: 5 }),
-]);
-
-console.log('video count:', videoRes.resources.length);
-console.log('raw count:', rawRes.resources.length);
-console.log('image count:', imageRes.resources.length);
-
-// In ra public_id của resource đầu tiên tìm thấy
-const first = [...videoRes.resources, ...rawRes.resources, ...imageRes.resources][0];
-console.log('First resource:', JSON.stringify(first, null, 2));
-
-    return result.resources.map((r: any) => ({
-      id: r.asset_id,
-      public_id: r.public_id,
-      url: r.secure_url,
-      title: r.context?.custom?.title || extractTitle(r.public_id),
-      duration: r.duration || 0,
-      format: r.format,
-      size: r.bytes,
-      created_at: r.created_at,
-      cover: r.context?.custom?.cover || null,
-    }));
   } catch (error) {
     console.error('Error fetching tracks:', error);
     return [];
   }
+}
+
+// public_id có dạng "music/TenNgheSi/tenfile" khi upload vào 1 thư mục cụ thể.
+// Nếu bài hát cũ nằm phẳng trong "music/tenfile" (không có thư mục), sẽ dùng
+// context.artist (nếu có) hoặc gộp vào nhóm "Không rõ nghệ sĩ".
+function deriveArtist(publicId: string, contextArtist?: string): string {
+  const parts = publicId.split('/');
+  // parts[0] = 'music', parts[1] = tên thư mục (nếu có thêm cấp), phần cuối = tên file
+  if (parts.length >= 3) {
+    const folderName = parts[1].replace(/[-_]/g, ' ').trim();
+    if (folderName) return folderName;
+  }
+  if (contextArtist && contextArtist.trim()) return contextArtist.trim();
+  return 'Không rõ nghệ sĩ';
+}
+
+// Danh sách thư mục (nghệ sĩ) hiện có trong Cloudinary, dưới "music/"
+export async function getArtistFolders(): Promise<string[]> {
+  try {
+    const result = await cloudinary.api.sub_folders('music');
+    return (result.folders || []).map((f: any) => f.name).sort((a: string, b: string) => a.localeCompare(b, 'vi'));
+  } catch (error: any) {
+    // Nếu thư mục "music" chưa tồn tại (chưa upload gì bao giờ), Cloudinary trả lỗi 404 — coi như danh sách rỗng
+    if (error?.error?.http_code === 404 || error?.http_code === 404) return [];
+    console.error('Error fetching folders:', error);
+    return [];
+  }
+}
+
+// Tạo thư mục nghệ sĩ mới (rỗng) trong Cloudinary
+export async function createArtistFolder(name: string): Promise<string> {
+  const safeName = sanitizeFolderName(name);
+  if (!safeName) throw new Error('Tên thư mục không hợp lệ');
+  await cloudinary.api.create_folder(`music/${safeName}`);
+  return safeName;
+}
+
+export function sanitizeFolderName(name: string): string {
+  return name
+    .trim()
+    .replace(/[\\/]/g, ' ') // không cho chứa dấu / \ để tránh tạo thư mục lồng ngoài ý muốn
+    .replace(/\.\./g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80)
+    .trim();
 }
 
 export async function deleteTrack(publicId: string): Promise<boolean> {
@@ -91,15 +132,17 @@ function extractTitle(publicId: string): string {
     .replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
-export async function generateUploadSignature(folder: string = 'music', title?: string) {
+export async function generateUploadSignature(
+  folder: string = 'music',
+  context?: string,
+  publicId?: string
+) {
   const timestamp = Math.round(new Date().getTime() / 1000);
+  const safeFolder = validateUploadFolder(folder);
 
-  // Chỉ include params được sign
-  const params: Record<string, any> = {
-    folder,
-    timestamp,
-    ...(title && { context: `title=${title}` }),
-  };
+  const params: Record<string, string | number> = { timestamp, folder: safeFolder };
+  if (context) params.context = context;
+  if (publicId) params.public_id = publicId; // <-- thêm dòng này
 
   const signature = cloudinary.utils.api_sign_request(
     params,
@@ -111,7 +154,33 @@ export async function generateUploadSignature(folder: string = 'music', title?: 
     signature,
     api_key: process.env.CLOUDINARY_API_KEY!,
     cloud_name: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME!,
-    folder,
-    ...(title && { context: `title=${title}` }),
+    folder: safeFolder,
+    context: context || '',
+    public_id: publicId || null, // <-- và dòng này
   };
+}
+
+// Chỉ cho phép upload vào "music" hoặc "music/<1 cấp thư mục>", chặn path traversal
+function validateUploadFolder(folder: string): string {
+  const trimmed = (folder || 'music').trim().replace(/^\/+|\/+$/g, '');
+  if (trimmed === 'music') return 'music';
+
+  const match = /^music\/([^/]+)$/.exec(trimmed);
+  if (!match) return 'music';
+
+  const safeSub = sanitizeFolderName(match[1]);
+  return safeSub ? `music/${safeSub}` : 'music';
+}
+
+export async function setTrackTitle(publicId: string, title: string): Promise<boolean> {
+  try {
+    const safeTitle = (title || 'Untitled').replace(/[|=]/g, '').trim() || 'Untitled';
+    await cloudinary.uploader.add_context(`title=${safeTitle}`, [publicId], {
+      resource_type: 'video',
+    });
+    return true;
+  } catch (error) {
+    console.error('Error setting track title:', error);
+    return false;
+  }
 }

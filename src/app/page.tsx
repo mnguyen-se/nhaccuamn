@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Upload, Trash2, Music, Search, Shuffle, Repeat, Repeat1,
-  ChevronUp, X, Loader2, RefreshCw
+  ChevronUp, X, Loader2, RefreshCw, Users, Plus, Folder, FolderOpen
 } from 'lucide-react';
 
 interface Track {
@@ -12,10 +12,19 @@ interface Track {
   public_id: string;
   url: string;
   title: string;
+  artist: string;
   duration: number;
   format: string;
   size: number;
   created_at: string;
+}
+
+const UNKNOWN_ARTIST = 'Không rõ nghệ sĩ';
+const ALL_ARTISTS = '__all__';
+
+// Cloudinary context dùng định dạng key=value|key=value nên phải loại bỏ ký tự "|" và "="
+function sanitizeContextValue(value: string): string {
+  return value.replace(/[|=]/g, '').trim() || 'Untitled';
 }
 
 type RepeatMode = 'none' | 'all' | 'one';
@@ -37,6 +46,10 @@ function formatDate(dateStr: string): string {
     day: '2-digit', month: '2-digit', year: 'numeric'
   });
 }
+// Chuẩn hoá tên để so sánh (bỏ khoảng trắng thừa, không phân biệt hoa/thường)
+function normalizeTitle(title: string): string {
+  return title.trim().toLowerCase().replace(/\s+/g, ' ');
+}
 
 export default function MusicApp() {
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -56,10 +69,23 @@ export default function MusicApp() {
   const [playerExpanded, setPlayerExpanded] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
+  const [uploadDone, setUploadDone] = useState(0);
+  const [uploadTotal, setUploadTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [selectedArtist, setSelectedArtist] = useState<string>(ALL_ARTISTS);
+
+  // Chọn thư mục (nghệ sĩ) trước khi upload
+  const [folders, setFolders] = useState<string[]>([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const chosenFolderRef = useRef<string | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const progressRef = useRef<HTMLInputElement>(null);
 
   // Fetch tracks
   const fetchTracks = useCallback(async () => {
@@ -78,19 +104,95 @@ export default function MusicApp() {
     }
   }, []);
 
+  // Danh sách thư mục (nghệ sĩ) đã có trên Cloudinary — dùng cho ô chọn khi upload
+  const fetchFolders = useCallback(async () => {
+    setFoldersLoading(true);
+    try {
+      const res = await fetch('/api/folders');
+      const data = await res.json();
+      setFolders((data.folders || []).sort((a: string, b: string) => a.localeCompare(b, 'vi')));
+    } catch (err) {
+      console.error('Error fetching folders:', err);
+    } finally {
+      setFoldersLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchTracks();
-  }, [fetchTracks]);
+    fetchFolders();
+  }, [fetchTracks, fetchFolders]);
 
-  // Filter tracks by search
+  // Đăng ký service worker để app có thể cài lên màn hình chính và
+  // hỗ trợ chạy ổn định hơn khi thu nhỏ / khoá màn hình điện thoại.
   useEffect(() => {
-    if (!search.trim()) {
-      setFilteredTracks(tracks);
-    } else {
-      const q = search.toLowerCase();
-      setFilteredTracks(tracks.filter(t => t.title.toLowerCase().includes(q)));
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(err => {
+        console.error('Service worker registration failed:', err);
+      });
     }
-  }, [search, tracks]);
+  }, []);
+
+  // Chốt thư mục sẽ upload vào, đóng dropdown, rồi mở hộp thoại chọn file
+  const startUploadToFolder = (folder: string | null) => {
+    chosenFolderRef.current = folder;
+    setShowFolderPicker(false);
+    fileInputRef.current?.click();
+  };
+
+  // Tạo thư mục (nghệ sĩ) mới, sau đó tự động chọn luôn thư mục vừa tạo để upload
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+
+    setIsCreatingFolder(true);
+    setFolderError(null);
+    try {
+      const res = await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Không thể tạo thư mục');
+
+      setFolders(prev => Array.from(new Set([...prev, data.folder])).sort((a, b) => a.localeCompare(b, 'vi')));
+      setNewFolderName('');
+      startUploadToFolder(data.folder);
+    } catch (err: any) {
+      setFolderError(err?.message || 'Không thể tạo thư mục');
+    } finally {
+      setIsCreatingFolder(false);
+    }
+  };
+
+  // Danh sách nghệ sĩ (duy nhất, có sắp xếp) để render tab
+  const artists = useMemo(() => {
+    const set = new Set(tracks.map(t => t.artist || UNKNOWN_ARTIST));
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'vi'));
+  }, [tracks]);
+
+  // Nếu nghệ sĩ đang chọn không còn tồn tại (bị xoá hết bài) thì quay lại "Tất cả"
+  useEffect(() => {
+    if (selectedArtist !== ALL_ARTISTS && !artists.includes(selectedArtist)) {
+      setSelectedArtist(ALL_ARTISTS);
+    }
+  }, [artists, selectedArtist]);
+
+  // Filter tracks theo tab nghệ sĩ + ô tìm kiếm
+  useEffect(() => {
+    let base = tracks;
+    if (selectedArtist !== ALL_ARTISTS) {
+      base = base.filter(t => (t.artist || UNKNOWN_ARTIST) === selectedArtist);
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      base = base.filter(
+        t => t.title.toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q)
+      );
+    }
+    setFilteredTracks(base);
+  }, [search, tracks, selectedArtist]);
 
   // Audio events
   useEffect(() => {
@@ -117,6 +219,60 @@ export default function MusicApp() {
       audio.removeEventListener('pause', onPause);
     };
   }, [currentTrack, repeatMode, isShuffle]);
+
+  // Media Session API: cho phép điều khiển nhạc (play/pause/next/prev) từ màn hình
+  // khoá / thông báo hệ thống, và là điều kiện để trình duyệt cho phát nhạc khi
+  // app bị đưa xuống nền hoặc màn hình điện thoại tắt.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('mediaSession' in navigator) || !currentTrack) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: currentTrack.title,
+      artist: currentTrack.artist || UNKNOWN_ARTIST,
+      album: 'Music Library',
+    });
+
+    navigator.mediaSession.setActionHandler('play', () => audioRef.current?.play());
+    navigator.mediaSession.setActionHandler('pause', () => audioRef.current?.pause());
+    navigator.mediaSession.setActionHandler('previoustrack', () => playPrev());
+    navigator.mediaSession.setActionHandler('nexttrack', () => playNext());
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      if (audioRef.current && details.seekTime != null) {
+        audioRef.current.currentTime = details.seekTime;
+        setCurrentTime(details.seekTime);
+      }
+    });
+
+    return () => {
+      navigator.mediaSession.setActionHandler('play', null);
+      navigator.mediaSession.setActionHandler('pause', null);
+      navigator.mediaSession.setActionHandler('previoustrack', null);
+      navigator.mediaSession.setActionHandler('nexttrack', null);
+      navigator.mediaSession.setActionHandler('seekto', null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrack]);
+
+  // Cập nhật trạng thái play/pause cho hệ thống + vị trí phát (để hiện đúng
+  // trên thanh điều khiển ở màn hình khoá)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('mediaSession' in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('mediaSession' in navigator)) return;
+    if (!duration || isNaN(duration)) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: 1,
+        position: Math.min(currentTime, duration),
+      });
+    } catch {
+      // Một số trình duyệt cũ không hỗ trợ setPositionState — bỏ qua an toàn
+    }
+  }, [duration, currentTime]);
 
   const handleTrackEnd = useCallback(() => {
     if (repeatMode === 'one') {
@@ -211,77 +367,105 @@ export default function MusicApp() {
 
   // Upload
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
 
-    const audioFiles = files.filter(f => f.type.startsWith('audio/'));
-    if (!audioFiles.length) {
-      alert('Vui lòng chọn file âm thanh (MP3, WAV, FLAC, AAC...)');
-      return;
-    }
-
-    setIsUploading(true);
-    setUploadProgress(0);
-
-    for (let i = 0; i < audioFiles.length; i++) {
-      const file = audioFiles[i];
-      setUploadQueue([file.name]);
-      setUploadProgress(Math.round((i / audioFiles.length) * 100));
-
-      try {
-        const titleName = file.name.replace(/\.[^.]+$/, '');
-
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('upload_preset', 'music_upload');
-        formData.append('folder', 'music');
-        formData.append('context', `title=${titleName}`);
-
-        await new Promise<void>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-
-          xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-              const fileProgress = Math.round((e.loaded / e.total) * 100);
-              const totalProgress = Math.round(
-                ((i / audioFiles.length) + (fileProgress / 100 / audioFiles.length)) * 100
-              );
-              setUploadProgress(totalProgress);
-            }
-          };
-
-          xhr.onload = () => {
-  if (xhr.status === 200) {
-    const result = JSON.parse(xhr.responseText);
-
-    console.log(result);
-
-    resolve(result);
-  } else {
-    reject(new Error(`Upload failed: ${xhr.status}`));
+  const audioFiles = files.filter(f => f.type.startsWith('audio/'));
+  if (!audioFiles.length) {
+    alert('Vui lòng chọn file âm thanh (MP3, WAV, FLAC, AAC...)');
+    return;
   }
-};
 
-          xhr.onerror = () => reject(new Error('Network error'));
+  // Tập hợp tên bài hát hiện có (đã chuẩn hoá) để đối chiếu trùng lặp
+  const existingTitles = new Set(tracks.map(t => normalizeTitle(t.title)));
 
-          xhr.open('POST', `https://api.cloudinary.com/v1_1/${process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME}/video/upload`);
-          xhr.send(formData);
-        });
+  const duplicates: string[] = [];
+  const toUpload: File[] = [];
 
-      } catch (err) {
-        console.error('Upload error:', err);
-      }
+  for (const file of audioFiles) {
+    const suggestedTitle = file.name.replace(/\.[^.]+$/, '').trim() || 'Untitled';
+    if (existingTitles.has(normalizeTitle(suggestedTitle))) {
+      duplicates.push(file.name);
+    } else {
+      toUpload.push(file);
+      // Thêm luôn vào set để tránh trùng giữa các file chọn cùng lúc
+      existingTitles.add(normalizeTitle(suggestedTitle));
     }
+  }
 
-    setUploadProgress(100);
-    setUploadQueue([]);
-    setIsUploading(false);
+  if (duplicates.length) {
+    alert(
+      `${duplicates.length} file đã tồn tại nên không được thêm:\n` +
+      duplicates.map(name => `• ${name}`).join('\n')
+    );
+  }
+
+  if (!toUpload.length) {
     if (fileInputRef.current) fileInputRef.current.value = '';
+    return;
+  }
 
-    // Đợi Cloudinary xử lý xong
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    fetchTracks();
-    };
+  const targetFolder = chosenFolderRef.current ? `music/${chosenFolderRef.current}` : 'music';
+
+  setIsUploading(true);
+  setUploadProgress(0);
+  setUploadDone(0);
+  setUploadTotal(toUpload.length);
+
+  for (let i = 0; i < toUpload.length; i++) {
+    const file = toUpload[i];
+    setUploadQueue([file.name]);
+    setUploadProgress(Math.round((i / toUpload.length) * 100));
+
+    try {
+      const suggestedTitle = file.name.replace(/\.[^.]+$/, '').trim();
+      const title = suggestedTitle || 'Untitled';
+
+      const sigRes = await fetch('/api/upload-signature', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: targetFolder }),
+      });
+      const sig = await sigRes.json();
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('api_key', sig.api_key);
+      formData.append('timestamp', sig.timestamp);
+      formData.append('signature', sig.signature);
+      formData.append('folder', sig.folder);
+
+      const uploadRes = await fetch(
+        `https://api.cloudinary.com/v1_1/${sig.cloud_name}/video/upload`,
+        { method: 'POST', body: formData }
+      );
+      const uploadData = await uploadRes.json();
+
+      if (uploadData?.public_id) {
+        const setTitleRes = await fetch('/api/tracks/set-title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ publicId: uploadData.public_id, title }),
+        });
+        if (!setTitleRes.ok) {
+          console.error('Set title failed:', await setTitleRes.text());
+        }
+      }
+    } catch (err) {
+      console.error('Upload error:', err);
+    } finally {
+      setUploadDone(i + 1);
+    }
+  }
+
+  setUploadProgress(100);
+  setUploadQueue([]);
+  setIsUploading(false);
+  chosenFolderRef.current = null;
+  if (fileInputRef.current) fileInputRef.current.value = '';
+  fetchTracks();
+  fetchFolders();
+};
 
   const handleDelete = async (track: Track, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -346,23 +530,94 @@ export default function MusicApp() {
             )}
           </div>
 
-          {/* Upload button */}
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-800 disabled:cursor-not-allowed px-3 py-2 rounded-xl text-sm font-medium transition-colors flex-shrink-0"
-          >
-            {isUploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
-            <span className="hidden sm:block">{isUploading ? 'Đang tải...' : 'Upload'}</span>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="audio/*"
-            multiple
-            className="hidden"
-            onChange={handleFileSelect}
-          />
+          {/* Upload button + dropdown chọn thư mục */}
+          <div className="relative flex-shrink-0">
+            <button
+              onClick={() => setShowFolderPicker(v => !v)}
+              disabled={isUploading}
+              className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-800 disabled:cursor-not-allowed px-3 py-2 rounded-xl text-sm font-medium transition-colors"
+            >
+              {isUploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
+              <span className="hidden sm:block">{isUploading ? 'Đang tải...' : 'Upload'}</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              multiple
+              className="hidden"
+              onChange={handleFileSelect}
+            />
+
+            {showFolderPicker && (
+              <>
+                {/* Lớp nền trong suốt để bấm ra ngoài là đóng dropdown */}
+                <div className="fixed inset-0 z-40" onClick={() => setShowFolderPicker(false)} />
+
+                <div className="absolute right-0 top-full mt-2 w-72 bg-[#15151d] border border-white/10 rounded-2xl shadow-2xl z-50 p-3">
+                  <p className="text-xs text-white/40 mb-2 px-1">Upload vào thư mục nào?</p>
+
+                  {/* Tạo thư mục mới */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <input
+                      type="text"
+                      value={newFolderName}
+                      onChange={e => setNewFolderName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleCreateFolder();
+                        }
+                      }}
+                      placeholder="Tên thư mục mới..."
+                      className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500/50 placeholder-white/25"
+                    />
+                    <button
+                      onClick={handleCreateFolder}
+                      disabled={isCreatingFolder || !newFolderName.trim()}
+                      title="Tạo thư mục mới"
+                      className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg bg-violet-600 hover:bg-violet-500 disabled:bg-violet-800 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isCreatingFolder ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                    </button>
+                  </div>
+                  {folderError && <p className="text-xs text-red-400 mb-2 px-1">{folderError}</p>}
+
+                  <div className="h-px bg-white/5 my-2" />
+
+                  {/* Danh sách thư mục có sẵn — cuộn để chọn */}
+                  <div className="max-h-56 overflow-y-auto space-y-1 pr-0.5">
+                    <button
+                      onClick={() => startUploadToFolder(null)}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left text-white/55 hover:bg-white/5 transition-colors"
+                    >
+                      <FolderOpen size={14} className="text-white/30 flex-shrink-0" />
+                      Không phân loại (gốc)
+                    </button>
+
+                    {foldersLoading ? (
+                      <div className="flex items-center justify-center py-4 text-white/30">
+                        <Loader2 size={16} className="animate-spin" />
+                      </div>
+                    ) : folders.length === 0 ? (
+                      <p className="text-xs text-white/25 px-3 py-2">Chưa có thư mục nào — tạo mới ở trên nhé.</p>
+                    ) : (
+                      folders.map(f => (
+                        <button
+                          key={f}
+                          onClick={() => startUploadToFolder(f)}
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left text-white/85 hover:bg-violet-600/15 transition-colors"
+                        >
+                          <Folder size={14} className="text-violet-400 flex-shrink-0" />
+                          <span className="truncate">{f}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
 
           <button
             onClick={fetchTracks}
@@ -380,8 +635,10 @@ export default function MusicApp() {
           <div className="max-w-3xl mx-auto">
             <div className="flex items-center gap-3 text-sm text-violet-300 mb-1">
               <Loader2 size={14} className="animate-spin" />
-              <span>Đang upload: {uploadQueue[0]}</span>
-              <span className="ml-auto">{uploadProgress}%</span>
+              <span className="truncate">
+                Đang upload ({uploadDone}/{uploadTotal}): {uploadQueue[0]}
+              </span>
+              <span className="ml-auto flex-shrink-0">{uploadProgress}%</span>
             </div>
             <div className="h-1 bg-white/10 rounded-full overflow-hidden">
               <div
@@ -395,6 +652,37 @@ export default function MusicApp() {
 
       {/* Main content */}
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 py-4 pb-32">
+        {/* Tabs theo nghệ sĩ */}
+        {artists.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto mb-3 pb-1 -mx-1 px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <button
+              onClick={() => setSelectedArtist(ALL_ARTISTS)}
+              className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap ${
+                selectedArtist === ALL_ARTISTS
+                  ? 'bg-violet-600 text-white'
+                  : 'bg-white/5 text-white/50 hover:bg-white/10'
+              }`}
+            >
+              <Users size={12} />
+              Tất cả
+            </button>
+            {artists.map(a => (
+              <button
+                key={a}
+                onClick={() => setSelectedArtist(a)}
+                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap ${
+                  selectedArtist === a
+                    ? 'bg-violet-600 text-white'
+                    : 'bg-white/5 text-white/50 hover:bg-white/10'
+                }`}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Stats bar */}
         {tracks.length > 0 && (
           <div className="text-xs text-white/30 mb-3">
             {filteredTracks.length === tracks.length
@@ -403,12 +691,14 @@ export default function MusicApp() {
           </div>
         )}
 
+        {/* Error */}
         {error && (
           <div className="bg-red-900/20 border border-red-500/20 rounded-xl p-4 mb-4 text-red-400 text-sm">
             {error}
           </div>
         )}
 
+        {/* Loading */}
         {isLoading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-3">
             <Loader2 className="animate-spin text-violet-400" size={32} />
@@ -444,6 +734,7 @@ export default function MusicApp() {
                       : 'hover:bg-white/5 border border-transparent'
                   }`}
                 >
+                  {/* Index / Play indicator */}
                   <div className="w-8 text-center flex-shrink-0">
                     {isCurrentPlaying ? (
                       <div className="flex items-end justify-center gap-0.5 h-4">
@@ -468,25 +759,29 @@ export default function MusicApp() {
                     )}
                   </div>
 
+                  {/* Track icon */}
                   <div className={`w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center ${
                     isActive ? 'bg-violet-600/30' : 'bg-white/5'
                   }`}>
                     <Music size={16} className={isActive ? 'text-violet-400' : 'text-white/30'} />
                   </div>
 
+                  {/* Info */}
                   <div className="flex-1 min-w-0">
                     <p className={`font-medium text-sm truncate ${isActive ? 'text-violet-300' : 'text-white/85'}`}>
                       {track.title}
                     </p>
-                    <p className="text-xs text-white/25 mt-0.5">
-                      {track.format.toUpperCase()} · {formatSize(track.size)} · {formatDate(track.created_at)}
+                    <p className="text-xs text-white/25 mt-0.5 truncate">
+                      {track.artist || UNKNOWN_ARTIST} · {track.format.toUpperCase()} · {formatSize(track.size)} · {formatDate(track.created_at)}
                     </p>
                   </div>
 
+                  {/* Duration */}
                   <span className="text-xs text-white/35 flex-shrink-0">
                     {formatTime(track.duration)}
                   </span>
 
+                  {/* Delete */}
                   <button
                     onClick={(e) => handleDelete(track, e)}
                     disabled={deletingId === track.id}
@@ -506,8 +801,11 @@ export default function MusicApp() {
 
       {/* Bottom Player */}
       {currentTrack && (
-        <div className="fixed bottom-0 left-0 right-0 z-50">
+        <div className={`fixed bottom-0 left-0 right-0 z-50 transition-all duration-300 ${
+          playerExpanded ? 'h-auto' : 'h-auto'
+        }`}>
           <div className="bg-[#111118]/95 backdrop-blur-xl border-t border-white/8">
+            {/* Progress bar (thin, always visible) */}
             <div className="h-0.5 bg-white/5 relative">
               <div
                 className="absolute left-0 top-0 h-full bg-violet-500 transition-all"
@@ -516,8 +814,10 @@ export default function MusicApp() {
             </div>
 
             <div className="max-w-3xl mx-auto px-4 py-3">
+              {/* Expanded controls */}
               {playerExpanded && (
                 <div className="mb-4 space-y-3">
+                  {/* Seekbar */}
                   <div className="space-y-1">
                     <input
                       type="range"
@@ -533,6 +833,7 @@ export default function MusicApp() {
                     </div>
                   </div>
 
+                  {/* Volume */}
                   <div className="flex items-center gap-2">
                     <button onClick={toggleMute} className="text-white/40 hover:text-white/70">
                       {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
@@ -550,7 +851,9 @@ export default function MusicApp() {
                 </div>
               )}
 
+              {/* Main player row */}
               <div className="flex items-center gap-3">
+                {/* Track info */}
                 <div
                   className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer"
                   onClick={() => setPlayerExpanded(!playerExpanded)}
@@ -562,8 +865,8 @@ export default function MusicApp() {
                     <p className="font-medium text-sm truncate text-violet-300">
                       {currentTrack.title}
                     </p>
-                    <p className="text-xs text-white/30">
-                      {currentIndex + 1} / {tracks.length}
+                    <p className="text-xs text-white/30 truncate">
+                      {currentTrack.artist || UNKNOWN_ARTIST} · {currentIndex + 1} / {tracks.length}
                     </p>
                   </div>
                   <ChevronUp
@@ -572,6 +875,7 @@ export default function MusicApp() {
                   />
                 </div>
 
+                {/* Controls */}
                 <div className="flex items-center gap-1 flex-shrink-0">
                   <button
                     onClick={() => setIsShuffle(!isShuffle)}
@@ -580,7 +884,10 @@ export default function MusicApp() {
                     <Shuffle size={15} />
                   </button>
 
-                  <button onClick={playPrev} className="p-2 text-white/60 hover:text-white transition-colors">
+                  <button
+                    onClick={playPrev}
+                    className="p-2 text-white/60 hover:text-white transition-colors"
+                  >
                     <SkipBack size={18} />
                   </button>
 
@@ -588,10 +895,16 @@ export default function MusicApp() {
                     onClick={togglePlay}
                     className="w-10 h-10 rounded-full bg-violet-600 hover:bg-violet-500 flex items-center justify-center transition-colors"
                   >
-                    {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
+                    {isPlaying
+                      ? <Pause size={18} />
+                      : <Play size={18} className="ml-0.5" />
+                    }
                   </button>
 
-                  <button onClick={playNext} className="p-2 text-white/60 hover:text-white transition-colors">
+                  <button
+                    onClick={playNext}
+                    className="p-2 text-white/60 hover:text-white transition-colors"
+                  >
                     <SkipForward size={18} />
                   </button>
 
