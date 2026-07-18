@@ -5,7 +5,7 @@ import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Upload, Trash2, Music, Search, Shuffle, Repeat, Repeat1,
   ChevronUp, X, Loader2, RefreshCw, Users, Plus, Folder, FolderOpen,
-  CheckSquare, Square
+  CheckSquare, Square, ArrowUpDown, Disc3
 } from 'lucide-react';
 
 interface Track {
@@ -14,6 +14,7 @@ interface Track {
   url: string;
   title: string;
   artist: string;
+  album: string; // 👈 THÊM: tên album (rỗng nếu không thuộc album nào)
   duration: number;
   format: string;
   size: number;
@@ -21,6 +22,7 @@ interface Track {
 }
 
 const UNKNOWN_ARTIST = 'Không rõ nghệ sĩ';
+const UNKNOWN_ALBUM = 'Khác';
 const ALL_ARTISTS = '__all__';
 
 // Cloudinary context dùng định dạng key=value|key=value nên phải loại bỏ ký tự "|" và "="
@@ -29,6 +31,8 @@ function sanitizeContextValue(value: string): string {
 }
 
 type RepeatMode = 'none' | 'all' | 'one';
+type SortKey = 'default' | 'title' | 'date' | 'duration';
+type SortDir = 'asc' | 'desc';
 
 function formatTime(seconds: number): string {
   if (!seconds || isNaN(seconds)) return '0:00';
@@ -53,6 +57,13 @@ function normalizeTitle(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+const SORT_LABELS: Record<SortKey, string> = {
+  default: 'Mặc định',
+  title: 'Tên bài hát',
+  date: 'Ngày thêm',
+  duration: 'Thời lượng',
+};
+
 export default function MusicApp() {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [filteredTracks, setFilteredTracks] = useState<Track[]>([]);
@@ -76,6 +87,16 @@ export default function MusicApp() {
   const [error, setError] = useState<string | null>(null);
   const [selectedArtist, setSelectedArtist] = useState<string>(ALL_ARTISTS);
 
+  // 👇 THÊM: state cho chức năng sort
+  const [sortKey, setSortKey] = useState<SortKey>('default');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [showSortMenu, setShowSortMenu] = useState(false);
+
+  // 👇 THÊM: sort riêng cho từng album (nếu không set thì dùng sort chung ở trên)
+  const [albumSort, setAlbumSort] = useState<Record<string, { key: SortKey; dir: SortDir }>>({});
+  const [openAlbumSortMenu, setOpenAlbumSortMenu] = useState<string | null>(null);
+  const [deletingAlbum, setDeletingAlbum] = useState<string | null>(null);
+
   const durationFetchedRef = useRef<Set<string>>(new Set());
 
   // Chọn thư mục (nghệ sĩ) trước khi upload
@@ -98,49 +119,48 @@ export default function MusicApp() {
 
   // Fetch tracks
   const fetchTracks = useCallback(async () => {
-  setIsLoading(true);
-  setError(null);
-  try {
-    const res = await fetch('/api/tracks', { cache: 'no-store' });
-    if (!res.ok) throw new Error('Failed to fetch');
-    const data = await res.json();
-    const newTracks: Track[] = data.tracks || [];
+    setIsLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/tracks', { cache: 'no-store' });
+      if (!res.ok) throw new Error('Failed to fetch');
+      const data = await res.json();
+      const newTracks: Track[] = data.tracks || [];
 
-    // Giữ lại duration đã tính được ở client (từ audio metadata)
-    // để tránh bị API (không lưu duration) ghi đè về 0 mỗi lần refetch.
-    setTracks(prev => {
-      const prevDurationMap = new Map(prev.map(t => [t.id, t.duration]));
-      return newTracks.map(t => ({
-        ...t,
-        duration: t.duration || prevDurationMap.get(t.id) || 0,
-      }));
-    });
-  } catch (err) {
-    setError('Không thể tải danh sách nhạc. Kiểm tra cấu hình Cloudinary.');
-    console.error(err);
-  } finally {
-    setIsLoading(false);
-  }
-}, []);
+      // Giữ lại duration đã tính được ở client (từ audio metadata)
+      // để tránh bị API (không lưu duration) ghi đè về 0 mỗi lần refetch.
+      setTracks(prev => {
+        const prevDurationMap = new Map(prev.map(t => [t.id, t.duration]));
+        return newTracks.map(t => ({
+          ...t,
+          duration: t.duration || prevDurationMap.get(t.id) || 0,
+        }));
+      });
+    } catch (err) {
+      setError('Không thể tải danh sách nhạc. Kiểm tra cấu hình Cloudinary.');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
-const fetchFolders = useCallback(async () => {
-  setFoldersLoading(true);
-  try {
-    const res = await fetch('/api/folders', { cache: 'no-store' });
-    const data = await res.json();
-    setFolders((data.folders || []).sort((a: string, b: string) => a.localeCompare(b, 'vi')));
-  } catch (err) {
-    console.error('Error fetching folders:', err);
-  } finally {
-    setFoldersLoading(false);
-  }
-}, []);
+  const fetchFolders = useCallback(async () => {
+    setFoldersLoading(true);
+    try {
+      const res = await fetch('/api/folders', { cache: 'no-store' });
+      const data = await res.json();
+      setFolders((data.folders || []).sort((a: string, b: string) => a.localeCompare(b, 'vi')));
+    } catch (err) {
+      console.error('Error fetching folders:', err);
+    } finally {
+      setFoldersLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     fetchTracks();
     fetchFolders();
   }, [fetchTracks, fetchFolders]);
-
 
   // Đăng ký service worker để app có thể cài lên màn hình chính và
   // hỗ trợ chạy ổn định hơn khi thu nhỏ / khoá màn hình điện thoại.
@@ -198,7 +218,7 @@ const fetchFolders = useCallback(async () => {
     }
   }, [artists, selectedArtist]);
 
-  // Filter tracks theo tab nghệ sĩ + ô tìm kiếm
+  // Filter + Sort tracks theo tab nghệ sĩ + ô tìm kiếm + kiểu sắp xếp
   useEffect(() => {
     let base = tracks;
     if (selectedArtist !== ALL_ARTISTS) {
@@ -210,30 +230,41 @@ const fetchFolders = useCallback(async () => {
         t => t.title.toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q)
       );
     }
+
+    // 👇 THÊM: áp dụng sắp xếp nếu người dùng chọn khác "Mặc định"
+    if (sortKey !== 'default') {
+      base = [...base].sort((a, b) => {
+        let cmp = 0;
+        if (sortKey === 'title') cmp = a.title.localeCompare(b.title, 'vi');
+        if (sortKey === 'date') cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        if (sortKey === 'duration') cmp = a.duration - b.duration;
+        return sortDir === 'asc' ? cmp : -cmp;
+      });
+    }
+
     setFilteredTracks(base);
-  }, [search, tracks, selectedArtist]);
+  }, [search, tracks, selectedArtist, sortKey, sortDir]);
 
   useEffect(() => {
-  tracks.forEach(track => {
-    if (track.duration || durationFetchedRef.current.has(track.id)) return;
-    durationFetchedRef.current.add(track.id);
+    tracks.forEach(track => {
+      if (track.duration || durationFetchedRef.current.has(track.id)) return;
+      durationFetchedRef.current.add(track.id);
 
-    const audio = new Audio();
-    audio.preload = 'metadata';
-    audio.src = track.url;
-    audio.addEventListener('loadedmetadata', () => {
-      console.log('✅ Loaded duration:', track.title, audio.duration); // 👈 THÊM DÒNG NÀY
-      if (!isNaN(audio.duration) && isFinite(audio.duration)) {
-        setTracks(prev =>
-          prev.map(t => (t.id === track.id ? { ...t, duration: audio.duration } : t))
-        );
-      }
+      const audio = new Audio();
+      audio.preload = 'metadata';
+      audio.src = track.url;
+      audio.addEventListener('loadedmetadata', () => {
+        if (!isNaN(audio.duration) && isFinite(audio.duration)) {
+          setTracks(prev =>
+            prev.map(t => (t.id === track.id ? { ...t, duration: audio.duration } : t))
+          );
+        }
+      });
+      audio.addEventListener('error', () => {
+        // Bỏ qua nếu file lỗi, tránh crash
+      });
     });
-    audio.addEventListener('error', (e) => {
-      console.error('❌ Error loading duration:', track.title, track.url, e); // 👈 THÊM DÒNG NÀY
-    });
-  });
-}, [tracks]);
+  }, [tracks]);
 
   // Audio events
   useEffect(() => {
@@ -270,7 +301,7 @@ const fetchFolders = useCallback(async () => {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: currentTrack.title,
       artist: currentTrack.artist || UNKNOWN_ARTIST,
-      album: 'Music Library',
+      album: currentTrack.album || 'Music Library',
     });
 
     navigator.mediaSession.setActionHandler('play', () => audioRef.current?.play());
@@ -598,6 +629,197 @@ const fetchFolders = useCallback(async () => {
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 
+  // 👇 THÊM: nhóm bài hát theo album — chỉ áp dụng khi đang xem 1 ca sĩ cụ thể
+  // (ở tab "Tất cả" thì hiển thị phẳng như trước, để tránh quá rối mắt).
+  // Mỗi album có thể có kiểu sắp xếp RIÊNG (albumSort[album]); nếu chưa chọn
+  // gì thì dùng chung kiểu sắp xếp ở thanh trên cùng (sortKey/sortDir).
+  const groupedByAlbum = useMemo(() => {
+    if (selectedArtist === ALL_ARTISTS) return null;
+
+    let base = tracks.filter(t => (t.artist || UNKNOWN_ARTIST) === selectedArtist);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      base = base.filter(t => t.title.toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q));
+    }
+
+    const map = new Map<string, Track[]>();
+    base.forEach(t => {
+      const key = t.album?.trim() || UNKNOWN_ALBUM;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(t);
+    });
+
+    const entries: [string, Track[]][] = Array.from(map.entries()).map(([album, albumTracks]) => {
+      const effectiveSort = albumSort[album] || { key: sortKey, dir: sortDir };
+      if (effectiveSort.key === 'default') return [album, albumTracks];
+
+      const sorted = [...albumTracks].sort((a, b) => {
+        let cmp = 0;
+        if (effectiveSort.key === 'title') cmp = a.title.localeCompare(b.title, 'vi');
+        if (effectiveSort.key === 'date') cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        if (effectiveSort.key === 'duration') cmp = a.duration - b.duration;
+        return effectiveSort.dir === 'asc' ? cmp : -cmp;
+      });
+      return [album, sorted];
+    });
+
+    // Đưa nhóm "Khác" (không thuộc album nào) xuống cuối cùng
+    entries.sort((a, b) => {
+      if (a[0] === UNKNOWN_ALBUM) return 1;
+      if (b[0] === UNKNOWN_ALBUM) return -1;
+      return a[0].localeCompare(b[0], 'vi');
+    });
+    return entries;
+  }, [tracks, selectedArtist, search, albumSort, sortKey, sortDir]);
+
+  // 👇 THÊM: xoá cả 1 album (toàn bộ bài hát trong đó + xoá thư mục)
+  const handleDeleteAlbum = async (album: string, albumTracks: Track[]) => {
+    if (selectedArtist === ALL_ARTISTS) return; // chỉ cho xoá khi đang xem đúng 1 nghệ sĩ
+    if (album === UNKNOWN_ALBUM) {
+      alert('Đây là nhóm bài hát chưa phân loại album, không thể xoá theo nhóm. Hãy xoá từng bài lẻ.');
+      return;
+    }
+    if (!confirm(`Xoá cả album "${album}" (${albumTracks.length} bài)? Hành động này không thể hoàn tác.`)) return;
+
+    setDeletingAlbum(album);
+    try {
+      const res = await fetch('/api/folders', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ artist: selectedArtist, album }),
+      });
+
+      if (res.ok) {
+        const idsToRemove = new Set(albumTracks.map(t => t.id));
+        setTracks(prev => prev.filter(t => !idsToRemove.has(t.id)));
+        if (currentTrack && idsToRemove.has(currentTrack.id)) {
+          setCurrentTrack(null);
+          setIsPlaying(false);
+        }
+        setAlbumSort(prev => {
+          const next = { ...prev };
+          delete next[album];
+          return next;
+        });
+      } else {
+        alert('Xoá album thất bại, thử lại sau.');
+      }
+    } catch (err) {
+      console.error('Delete album error:', err);
+      alert('Xoá album thất bại, thử lại sau.');
+    } finally {
+      setDeletingAlbum(null);
+    }
+  };
+
+  // Render 1 dòng track — tách thành hàm dùng chung cho cả chế độ phẳng và chế độ nhóm album
+  const renderTrackRow = (track: Track, idx: number) => {
+    const isActive = currentTrack?.id === track.id;
+    const isCurrentPlaying = isActive && isPlaying;
+    const isSelected = selectedIds.has(track.id);
+
+    return (
+      <div
+        key={track.id}
+        onClick={() => {
+          if (selectMode) {
+            setSelectedIds(prev => {
+              const next = new Set(prev);
+              if (next.has(track.id)) next.delete(track.id);
+              else next.add(track.id);
+              return next;
+            });
+          } else {
+            isActive ? togglePlay() : playTrack(track);
+          }
+        }}
+        className={`group flex items-center gap-3 px-3 py-3 rounded-xl cursor-pointer transition-all ${
+          isSelected
+            ? 'bg-violet-600/20 border border-violet-500/40'
+            : isActive
+              ? 'bg-violet-600/15 border border-violet-500/20'
+              : 'hover:bg-white/5 border border-transparent'
+        }`}
+      >
+        {/* Checkbox chọn nhiều */}
+        {selectMode && (
+          <button
+            onClick={(e) => toggleSelectTrack(track.id, e)}
+            className="flex-shrink-0"
+          >
+            {isSelected
+              ? <CheckSquare size={18} className="text-violet-400" />
+              : <Square size={18} className="text-white/30" />
+            }
+          </button>
+        )}
+
+        {/* Index / Play indicator */}
+        {!selectMode && (
+          <div className="w-8 text-center flex-shrink-0">
+            {isCurrentPlaying ? (
+              <div className="flex items-end justify-center gap-0.5 h-4">
+                {[1,2,3,4,5].map(i => (
+                  <div
+                    key={i}
+                    className="w-1 bg-violet-400 rounded-full wave-bar"
+                    style={{ animationDelay: `${(i-1)*0.1}s` }}
+                  />
+                ))}
+              </div>
+            ) : (
+              <span className={`text-xs ${isActive ? 'text-violet-400' : 'text-white/25 group-hover:hidden'}`}>
+                {idx + 1}
+              </span>
+            )}
+            {!isActive && (
+              <Play size={14} className="hidden group-hover:block mx-auto text-white/60" />
+            )}
+            {isActive && !isCurrentPlaying && (
+              <Play size={14} className="mx-auto text-violet-400" />
+            )}
+          </div>
+        )}
+
+        {/* Track icon */}
+        <div className={`w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center ${
+          isActive ? 'bg-violet-600/30' : 'bg-white/5'
+        }`}>
+          <Music size={16} className={isActive ? 'text-violet-400' : 'text-white/30'} />
+        </div>
+
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <p className={`font-medium text-sm truncate ${isActive ? 'text-violet-300' : 'text-white/85'}`}>
+            {track.title}
+          </p>
+          <p className="text-xs text-white/25 mt-0.5 truncate">
+            {track.artist || UNKNOWN_ARTIST} · {track.format.toUpperCase()} · {formatSize(track.size)} · {formatDate(track.created_at)}
+          </p>
+        </div>
+
+        {/* Duration */}
+        <span className="text-xs text-white/35 flex-shrink-0">
+          {formatTime(track.duration)}
+        </span>
+
+        {/* Delete (ẩn khi đang ở chế độ chọn nhiều) */}
+        {!selectMode && (
+          <button
+            onClick={(e) => handleDelete(track, e)}
+            disabled={deletingId === track.id}
+            className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-white/20 hover:text-red-400 transition-all flex-shrink-0"
+          >
+            {deletingId === track.id
+              ? <Loader2 size={13} className="animate-spin" />
+              : <Trash2 size={13} />
+            }
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col">
       <audio ref={audioRef} />
@@ -655,6 +877,9 @@ const fetchFolders = useCallback(async () => {
 
                 <div className="absolute right-0 top-full mt-2 w-72 bg-[#15151d] border border-white/10 rounded-2xl shadow-2xl z-50 p-3">
                   <p className="text-xs text-white/40 mb-2 px-1">Upload vào thư mục nào?</p>
+                  <p className="text-[11px] text-white/25 mb-2 px-1">
+                    Mẹo: gõ "Ca sĩ/Album" để upload thẳng vào 1 album cụ thể của ca sĩ đó.
+                  </p>
 
                   {/* Tạo thư mục mới */}
                   <div className="flex items-center gap-2 mb-2">
@@ -668,7 +893,7 @@ const fetchFolders = useCallback(async () => {
                           handleCreateFolder();
                         }
                       }}
-                      placeholder="Tên thư mục mới..."
+                      placeholder="VD: MCK/RPT Vol.1"
                       className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500/50 placeholder-white/25"
                     />
                     <button
@@ -713,6 +938,50 @@ const fetchFolders = useCallback(async () => {
                       ))
                     )}
                   </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 👇 THÊM: Nút Sort */}
+          <div className="relative flex-shrink-0">
+            <button
+              onClick={() => setShowSortMenu(v => !v)}
+              className={`p-2 transition-colors ${sortKey !== 'default' ? 'text-violet-400' : 'text-white/40 hover:text-white/70'}`}
+              title="Sắp xếp"
+            >
+              <ArrowUpDown size={15} />
+            </button>
+
+            {showSortMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setShowSortMenu(false)} />
+                <div className="absolute right-0 top-full mt-2 w-48 bg-[#15151d] border border-white/10 rounded-2xl shadow-2xl z-50 p-2">
+                  {(Object.keys(SORT_LABELS) as SortKey[]).map(key => (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        setSortKey(key);
+                        setShowSortMenu(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                        sortKey === key ? 'bg-violet-600/20 text-violet-300' : 'text-white/70 hover:bg-white/5'
+                      }`}
+                    >
+                      {SORT_LABELS[key]}
+                    </button>
+                  ))}
+                  {sortKey !== 'default' && (
+                    <>
+                      <div className="h-px bg-white/5 my-1" />
+                      <button
+                        onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}
+                        className="w-full text-left px-3 py-2 rounded-lg text-sm text-white/70 hover:bg-white/5 transition-colors"
+                      >
+                        {sortDir === 'asc' ? '↑ Tăng dần' : '↓ Giảm dần'}
+                      </button>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -790,12 +1059,19 @@ const fetchFolders = useCallback(async () => {
           </div>
         )}
 
-        {/* Stats bar */}
+        {/* Stats bar + trạng thái sort hiện tại */}
         {tracks.length > 0 && (
-          <div className="text-xs text-white/30 mb-3">
-            {filteredTracks.length === tracks.length
-              ? `${tracks.length} bài hát`
-              : `${filteredTracks.length} / ${tracks.length} bài hát`}
+          <div className="flex items-center gap-2 text-xs text-white/30 mb-3">
+            <span>
+              {filteredTracks.length === tracks.length
+                ? `${tracks.length} bài hát`
+                : `${filteredTracks.length} / ${tracks.length} bài hát`}
+            </span>
+            {sortKey !== 'default' && (
+              <span className="text-violet-400/70">
+                · Sắp xếp: {SORT_LABELS[sortKey]} ({sortDir === 'asc' ? 'tăng dần' : 'giảm dần'})
+              </span>
+            )}
           </div>
         )}
 
@@ -851,114 +1127,111 @@ const fetchFolders = useCallback(async () => {
               )}
             </div>
           </div>
-        ) : (
-          <div className="space-y-1">
-            {filteredTracks.map((track, idx) => {
-              const isActive = currentTrack?.id === track.id;
-              const isCurrentPlaying = isActive && isPlaying;
-              const isSelected = selectedIds.has(track.id);
-
+        ) : groupedByAlbum ? (
+          // 👇 THÊM: chế độ hiển thị nhóm theo album (khi đang xem 1 ca sĩ cụ thể)
+          <div className="space-y-6">
+            {groupedByAlbum.map(([album, albumTracks]) => {
+              const currentAlbumSort = albumSort[album] || { key: sortKey, dir: sortDir };
               return (
-                <div
-                  key={track.id}
-                  onClick={() => {
-                    if (selectMode) {
-                      setSelectedIds(prev => {
-                        const next = new Set(prev);
-                        if (next.has(track.id)) next.delete(track.id);
-                        else next.add(track.id);
-                        return next;
-                      });
-                    } else {
-                      isActive ? togglePlay() : playTrack(track);
-                    }
-                  }}
-                  className={`group flex items-center gap-3 px-3 py-3 rounded-xl cursor-pointer transition-all ${
-                    isSelected
-                      ? 'bg-violet-600/20 border border-violet-500/40'
-                      : isActive
-                        ? 'bg-violet-600/15 border border-violet-500/20'
-                        : 'hover:bg-white/5 border border-transparent'
-                  }`}
-                >
-                  {/* Checkbox chọn nhiều */}
-                  {selectMode && (
-                    <button
-                      onClick={(e) => toggleSelectTrack(track.id, e)}
-                      className="flex-shrink-0"
-                    >
-                      {isSelected
-                        ? <CheckSquare size={18} className="text-violet-400" />
-                        : <Square size={18} className="text-white/30" />
-                      }
-                    </button>
-                  )}
+                <div key={album}>
+                  <div className="flex items-center gap-2 mb-2 px-1">
+                    <Disc3 size={13} className="text-white/25 flex-shrink-0" />
+                    <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wide truncate">
+                      {album}
+                    </h3>
+                    <span className="text-xs text-white/20 flex-shrink-0">({albumTracks.length})</span>
 
-                  {/* Index / Play indicator */}
-                  {!selectMode && (
-                    <div className="w-8 text-center flex-shrink-0">
-                      {isCurrentPlaying ? (
-                        <div className="flex items-end justify-center gap-0.5 h-4">
-                          {[1,2,3,4,5].map(i => (
-                            <div
-                              key={i}
-                              className="w-1 bg-violet-400 rounded-full wave-bar"
-                              style={{ animationDelay: `${(i-1)*0.1}s` }}
-                            />
-                          ))}
-                        </div>
-                      ) : (
-                        <span className={`text-xs ${isActive ? 'text-violet-400' : 'text-white/25 group-hover:hidden'}`}>
-                          {idx + 1}
-                        </span>
+                    <div className="ml-auto flex items-center gap-0.5 flex-shrink-0 relative">
+                      {/* Sort riêng cho album này */}
+                      <button
+                        onClick={() => setOpenAlbumSortMenu(prev => prev === album ? null : album)}
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          albumSort[album] ? 'text-violet-400' : 'text-white/25 hover:text-white/50'
+                        }`}
+                        title="Sắp xếp riêng album này"
+                      >
+                        <ArrowUpDown size={12} />
+                      </button>
+
+                      {openAlbumSortMenu === album && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setOpenAlbumSortMenu(null)} />
+                          <div className="absolute right-8 top-full mt-1 w-44 bg-[#15151d] border border-white/10 rounded-xl shadow-2xl z-50 p-2">
+                            {(Object.keys(SORT_LABELS) as SortKey[]).map(key => (
+                              <button
+                                key={key}
+                                onClick={() => {
+                                  if (key === 'default') {
+                                    setAlbumSort(prev => {
+                                      const next = { ...prev };
+                                      delete next[album];
+                                      return next;
+                                    });
+                                  } else {
+                                    setAlbumSort(prev => ({
+                                      ...prev,
+                                      [album]: { key, dir: prev[album]?.dir || 'desc' },
+                                    }));
+                                  }
+                                  setOpenAlbumSortMenu(null);
+                                }}
+                                className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
+                                  currentAlbumSort.key === key && albumSort[album]
+                                    ? 'bg-violet-600/20 text-violet-300'
+                                    : 'text-white/70 hover:bg-white/5'
+                                }`}
+                              >
+                                {SORT_LABELS[key]}
+                              </button>
+                            ))}
+                            {albumSort[album] && (
+                              <>
+                                <div className="h-px bg-white/5 my-1" />
+                                <button
+                                  onClick={() =>
+                                    setAlbumSort(prev => ({
+                                      ...prev,
+                                      [album]: {
+                                        key: prev[album].key,
+                                        dir: prev[album].dir === 'asc' ? 'desc' : 'asc',
+                                      },
+                                    }))
+                                  }
+                                  className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs text-white/70 hover:bg-white/5 transition-colors"
+                                >
+                                  {albumSort[album].dir === 'asc' ? '↑ Tăng dần' : '↓ Giảm dần'}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </>
                       )}
-                      {!isActive && (
-                        <Play size={14} className="hidden group-hover:block mx-auto text-white/60" />
-                      )}
-                      {isActive && !isCurrentPlaying && (
-                        <Play size={14} className="mx-auto text-violet-400" />
+
+                      {/* Xoá cả album (ẩn với nhóm "Khác") */}
+                      {album !== UNKNOWN_ALBUM && (
+                        <button
+                          onClick={() => handleDeleteAlbum(album, albumTracks)}
+                          disabled={deletingAlbum === album}
+                          className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                          title="Xoá cả album"
+                        >
+                          {deletingAlbum === album
+                            ? <Loader2 size={12} className="animate-spin" />
+                            : <Trash2 size={12} />}
+                        </button>
                       )}
                     </div>
-                  )}
-
-                  {/* Track icon */}
-                  <div className={`w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center ${
-                    isActive ? 'bg-violet-600/30' : 'bg-white/5'
-                  }`}>
-                    <Music size={16} className={isActive ? 'text-violet-400' : 'text-white/30'} />
                   </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <p className={`font-medium text-sm truncate ${isActive ? 'text-violet-300' : 'text-white/85'}`}>
-                      {track.title}
-                    </p>
-                    <p className="text-xs text-white/25 mt-0.5 truncate">
-                      {track.artist || UNKNOWN_ARTIST} · {track.format.toUpperCase()} · {formatSize(track.size)} · {formatDate(track.created_at)}
-                    </p>
+                  <div className="space-y-1">
+                    {albumTracks.map((track, idx) => renderTrackRow(track, idx))}
                   </div>
-
-                  {/* Duration */}
-                  <span className="text-xs text-white/35 flex-shrink-0">
-                    {formatTime(track.duration)}
-                  </span>
-
-                  {/* Delete (ẩn khi đang ở chế độ chọn nhiều) */}
-                  {!selectMode && (
-                    <button
-                      onClick={(e) => handleDelete(track, e)}
-                      disabled={deletingId === track.id}
-                      className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-white/20 hover:text-red-400 transition-all flex-shrink-0"
-                    >
-                      {deletingId === track.id
-                        ? <Loader2 size={13} className="animate-spin" />
-                        : <Trash2 size={13} />
-                      }
-                    </button>
-                  )}
                 </div>
               );
             })}
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {filteredTracks.map((track, idx) => renderTrackRow(track, idx))}
           </div>
         )}
       </main>
@@ -1030,7 +1303,8 @@ const fetchFolders = useCallback(async () => {
                       {currentTrack.title}
                     </p>
                     <p className="text-xs text-white/30 truncate">
-                      {currentTrack.artist || UNKNOWN_ARTIST} · {currentIndex + 1} / {tracks.length}
+                      {currentTrack.artist || UNKNOWN_ARTIST}
+                      {currentTrack.album ? ` · ${currentTrack.album}` : ''} · {currentIndex + 1} / {tracks.length}
                     </p>
                   </div>
                   <ChevronUp
