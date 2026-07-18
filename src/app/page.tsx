@@ -96,34 +96,33 @@ export default function MusicApp() {
 
   // Fetch tracks
   const fetchTracks = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/tracks');
-      if (!res.ok) throw new Error('Failed to fetch');
-      const data = await res.json();
-      setTracks(data.tracks || []);
-    } catch (err) {
-      setError('Không thể tải danh sách nhạc. Kiểm tra cấu hình Cloudinary.');
-      console.error(err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  setIsLoading(true);
+  setError(null);
+  try {
+    const res = await fetch('/api/tracks', { cache: 'no-store' });
+    if (!res.ok) throw new Error('Failed to fetch');
+    const data = await res.json();
+    setTracks(data.tracks || []);
+  } catch (err) {
+    setError('Không thể tải danh sách nhạc. Kiểm tra cấu hình Cloudinary.');
+    console.error(err);
+  } finally {
+    setIsLoading(false);
+  }
+}, []);
 
-  // Danh sách thư mục (nghệ sĩ) đã có trên Cloudinary — dùng cho ô chọn khi upload
-  const fetchFolders = useCallback(async () => {
-    setFoldersLoading(true);
-    try {
-      const res = await fetch('/api/folders');
-      const data = await res.json();
-      setFolders((data.folders || []).sort((a: string, b: string) => a.localeCompare(b, 'vi')));
-    } catch (err) {
-      console.error('Error fetching folders:', err);
-    } finally {
-      setFoldersLoading(false);
-    }
-  }, []);
+const fetchFolders = useCallback(async () => {
+  setFoldersLoading(true);
+  try {
+    const res = await fetch('/api/folders', { cache: 'no-store' });
+    const data = await res.json();
+    setFolders((data.folders || []).sort((a: string, b: string) => a.localeCompare(b, 'vi')));
+  } catch (err) {
+    console.error('Error fetching folders:', err);
+  } finally {
+    setFoldersLoading(false);
+  }
+}, []);
 
   useEffect(() => {
     fetchTracks();
