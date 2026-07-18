@@ -76,6 +76,8 @@ export default function MusicApp() {
   const [error, setError] = useState<string | null>(null);
   const [selectedArtist, setSelectedArtist] = useState<string>(ALL_ARTISTS);
 
+  const durationFetchedRef = useRef<Set<string>>(new Set());
+
   // Chọn thư mục (nghệ sĩ) trước khi upload
   const [folders, setFolders] = useState<string[]>([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
@@ -102,7 +104,17 @@ export default function MusicApp() {
     const res = await fetch('/api/tracks', { cache: 'no-store' });
     if (!res.ok) throw new Error('Failed to fetch');
     const data = await res.json();
-    setTracks(data.tracks || []);
+    const newTracks: Track[] = data.tracks || [];
+
+    // Giữ lại duration đã tính được ở client (từ audio metadata)
+    // để tránh bị API (không lưu duration) ghi đè về 0 mỗi lần refetch.
+    setTracks(prev => {
+      const prevDurationMap = new Map(prev.map(t => [t.id, t.duration]));
+      return newTracks.map(t => ({
+        ...t,
+        duration: t.duration || prevDurationMap.get(t.id) || 0,
+      }));
+    });
   } catch (err) {
     setError('Không thể tải danh sách nhạc. Kiểm tra cấu hình Cloudinary.');
     console.error(err);
@@ -128,6 +140,7 @@ const fetchFolders = useCallback(async () => {
     fetchTracks();
     fetchFolders();
   }, [fetchTracks, fetchFolders]);
+
 
   // Đăng ký service worker để app có thể cài lên màn hình chính và
   // hỗ trợ chạy ổn định hơn khi thu nhỏ / khoá màn hình điện thoại.
@@ -199,6 +212,28 @@ const fetchFolders = useCallback(async () => {
     }
     setFilteredTracks(base);
   }, [search, tracks, selectedArtist]);
+
+  useEffect(() => {
+  tracks.forEach(track => {
+    if (track.duration || durationFetchedRef.current.has(track.id)) return;
+    durationFetchedRef.current.add(track.id);
+
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.src = track.url;
+    audio.addEventListener('loadedmetadata', () => {
+      console.log('✅ Loaded duration:', track.title, audio.duration); // 👈 THÊM DÒNG NÀY
+      if (!isNaN(audio.duration) && isFinite(audio.duration)) {
+        setTracks(prev =>
+          prev.map(t => (t.id === track.id ? { ...t, duration: audio.duration } : t))
+        );
+      }
+    });
+    audio.addEventListener('error', (e) => {
+      console.error('❌ Error loading duration:', track.title, track.url, e); // 👈 THÊM DÒNG NÀY
+    });
+  });
+}, [tracks]);
 
   // Audio events
   useEffect(() => {
