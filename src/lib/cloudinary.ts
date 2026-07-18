@@ -22,20 +22,17 @@ export interface Track {
 export async function getAllTracks(): Promise<Track[]> {
   try {
     const folders = await getArtistFolders();
-    const prefixes = ['music', ...folders.map(f => `music/${f}`)];
+    const folderPaths = ['music', ...folders.map(f => `music/${f}`)];
 
     const resourceMap = new Map<string, any>();
 
-    for (const prefix of prefixes) {
-      const result = await cloudinary.api.resources({
-        resource_type: 'video',
-        type: 'upload',
-        prefix,
+    for (const folderPath of folderPaths) {
+      const result = await cloudinary.api.resources_by_asset_folder(folderPath, {
         context: true,
         max_results: 100,
       });
       for (const r of result.resources) {
-        resourceMap.set(r.public_id, r); // trùng public_id sẽ tự ghi đè, không nhân đôi
+        resourceMap.set(r.asset_id, r);
       }
     }
 
@@ -46,7 +43,7 @@ export async function getAllTracks(): Promise<Track[]> {
     return allResources.map((r: any) => {
       const rawTitle: string = r.context?.custom?.title || extractTitle(r.public_id);
       const contextArtist: string | undefined = r.context?.custom?.artist;
-      const artist = deriveArtist(r.public_id, contextArtist);
+      const artist = deriveArtist(r.public_id, contextArtist, r.asset_folder);
 
       return {
         id: r.asset_id,
@@ -67,15 +64,13 @@ export async function getAllTracks(): Promise<Track[]> {
   }
 }
 
-// public_id có dạng "music/TenNgheSi/tenfile" khi upload vào 1 thư mục cụ thể.
-// Nếu bài hát cũ nằm phẳng trong "music/tenfile" (không có thư mục), sẽ dùng
-// context.artist (nếu có) hoặc gộp vào nhóm "Không rõ nghệ sĩ".
-function deriveArtist(publicId: string, contextArtist?: string): string {
-  const parts = publicId.split('/');
-  // parts[0] = 'music', parts[1] = tên thư mục (nếu có thêm cấp), phần cuối = tên file
-  if (parts.length >= 3) {
-    const folderName = parts[1].replace(/[-_]/g, ' ').trim();
-    if (folderName) return folderName;
+function deriveArtist(publicId: string, contextArtist?: string, assetFolder?: string): string {
+  if (assetFolder) {
+    const parts = assetFolder.split('/');
+    if (parts.length >= 2 && parts[0] === 'music') {
+      const folderName = parts[1].replace(/[-_]/g, ' ').trim();
+      if (folderName) return folderName;
+    }
   }
   if (contextArtist && contextArtist.trim()) return contextArtist.trim();
   return 'Không rõ nghệ sĩ';
