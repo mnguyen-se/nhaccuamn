@@ -91,3 +91,69 @@ input[type="range"]::-moz-range-thumb {
   background: #7c6af7;
   border: none;
 }
+/* Custom range slider (dùng cho seekbar + volume) */
+input[type='range'].custom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  outline: none;
+  cursor: pointer;
+}
+
+/* Track đã phát (phần tím bên trái nút kéo) */
+input[type='range'].custom-slider {
+  background: linear-gradient(
+    to right,
+    #8b5cf6 0%,
+    #8b5cf6 var(--range-progress, 0%),
+    rgba(255, 255, 255, 0.1) var(--range-progress, 0%),
+    rgba(255, 255, 255, 0.1) 100%
+  );
+}
+
+/* Nút kéo (thumb) - Chrome/Safari */
+input[type='range'].custom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #8b5cf6;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.6);
+  transition: transform 0.15s ease;
+}
+
+input[type='range'].custom-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+input[type='range'].custom-slider:active::-webkit-slider-thumb {
+  transform: scale(1.3);
+}
+
+/* Nút kéo (thumb) - Firefox */
+input[type='range'].custom-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid #8b5cf6;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.6);
+  transition: transform 0.15s ease;
+}
+
+input[type='range'].custom-slider::-moz-range-thumb:hover {
+  transform: scale(1.2);
+}
+
+input[type='range'].custom-slider::-moz-range-progress {
+  background: #8b5cf6;
+  height: 4px;
+  border-radius: 999px;
+}

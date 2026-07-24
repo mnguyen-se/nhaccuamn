@@ -1253,27 +1253,31 @@ export default function MusicApp() {
             <div className="max-w-3xl mx-auto px-4 py-3">
               {/* Expanded controls */}
               {playerExpanded && (
-                <div className="mb-4 space-y-3">
+                <div className="mb-4 space-y-4 px-1">
                   {/* Seekbar */}
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     <input
                       type="range"
                       min={0}
                       max={duration || 0}
                       value={currentTime}
                       onChange={handleSeek}
-                      className="w-full accent-violet-500"
+                      className="custom-slider"
+                      style={{ ['--range-progress' as any]: `${progressPercent}%` }}
                     />
-                    <div className="flex justify-between text-xs text-white/30">
+                    <div className="flex justify-between text-[11px] text-white/35 font-medium tabular-nums">
                       <span>{formatTime(currentTime)}</span>
                       <span>{formatTime(duration)}</span>
                     </div>
                   </div>
 
                   {/* Volume */}
-                  <div className="flex items-center gap-2">
-                    <button onClick={toggleMute} className="text-white/40 hover:text-white/70">
-                      {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={toggleMute}
+                      className="text-white/50 hover:text-violet-400 transition-colors flex-shrink-0"
+                    >
+                      {isMuted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
                     </button>
                     <input
                       type="range"
@@ -1282,8 +1286,12 @@ export default function MusicApp() {
                       step={0.01}
                       value={isMuted ? 0 : volume}
                       onChange={handleVolume}
-                      className="w-28 accent-violet-500"
+                      className="custom-slider flex-1"
+                      style={{ ['--range-progress' as any]: `${(isMuted ? 0 : volume) * 100}%` }}
                     />
+                    <span className="text-[11px] text-white/35 font-medium tabular-nums w-8 text-right flex-shrink-0">
+                      {Math.round((isMuted ? 0 : volume) * 100)}%
+                    </span>
                   </div>
                 </div>
               )}
